@@ -1,0 +1,64 @@
+﻿# BIFROST — Distributed AI Inference Platform
+
+Intelligent routing of coding and knowledge work across heterogeneous hardware.
+85-92% cost savings versus cloud-only approaches.
+
+## Architecture
+
+- **Bifrost** — Primary workstation (RX 9070 XT, Tier 1a)
+- **Hearth** — Always-on server (embeddings, monitoring, GitOps)
+- **Forge** — Portable AI workstation (96GB VRAM, Tiers 1b/2/2.5)
+
+## Modes
+
+| Mode | Description |
+|------|------------|
+| JARVIS | Full power — all machines |
+| WORKSHOP | Bifrost + Hearth only |
+| WORKSHOP-OFFLINE | Privacy-first, zero cloud |
+
+See `docs/MASTER-PLAN.md` for the complete architecture.
+
+## Structure
+
+`
+k8s/              Kubernetes manifests (FluxCD managed)
+flux/              FluxCD sync configuration
+control-plane/     Observer, Broadcaster, Arbiter, Router
+scripts/           Per-machine setup and maintenance
+dashboards/        Grafana JSON exports
+docs/              Architecture documentation
+`
+"@ | Set-Content "README.md" -Encoding utf8
+
+# .gitignore
+@"
+# Secrets
+*.sops.yaml
+*.age
+.env
+*.key
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Node
+node_modules/
+
+# Ollama models (never commit models)
+*.gguf
+*.bin
+models/
