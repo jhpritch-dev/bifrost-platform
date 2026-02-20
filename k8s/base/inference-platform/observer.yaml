@@ -1,0 +1,85 @@
+# k8s/base/inference-platform/observer.yaml
+# Observer v3 — Signal collector for BIFROST control plane
+# Polls all inference endpoints every 30s, produces signal snapshots
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: observer
+  namespace: inference-platform
+  labels:
+    app: observer
+    component: control-plane
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: observer
+  template:
+    metadata:
+      labels:
+        app: observer
+        component: control-plane
+    spec:
+      containers:
+      - name: observer
+        image: bifrost/observer:3.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8081
+          name: http
+        env:
+        - name: OBSERVER_POLL_INTERVAL
+          value: "30"
+        - name: OBSERVER_PROBE_TIMEOUT
+          value: "5"
+        - name: BIFROST_OLLAMA_URL
+          value: "http://192.168.2.33:11434"
+        - name: HEARTH_EMBED_URL
+          value: "http://ollama-embed.context.svc.cluster.local:11434"
+        - name: HEARTH_K3D_API_URL
+          value: "https://kubernetes.default.svc"
+        - name: FORGE_LAN_URL
+          value: ""
+        - name: FORGE_TAILSCALE_URL
+          value: ""
+        - name: FORGE_NPU_PROBE_URL
+          value: ""
+        - name: ANTHROPIC_API_URL
+          value: "https://api.anthropic.com"
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 128Mi
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8081
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8081
+          initialDelaySeconds: 10
+          periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: observer
+  namespace: inference-platform
+  labels:
+    app: observer
+    component: control-plane
+spec:
+  selector:
+    app: observer
+  ports:
+  - name: http
+    port: 8081
+    targetPort: 8081
+  type: ClusterIP

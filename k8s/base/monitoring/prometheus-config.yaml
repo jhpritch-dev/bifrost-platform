@@ -1,0 +1,86 @@
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+
+scrape_configs:
+  # --- Bifrost Ollama (inference tiers 1a, 2) ---
+  - job_name: 'bifrost-ollama'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['192.168.2.33:11434']
+        labels:
+          machine: 'bifrost'
+          role: 'inference'
+
+  # --- Hearth Embedding (Tier E, cluster-internal) ---
+  - job_name: 'hearth-ollama-embed'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['ollama-embed.context.svc.cluster.local:11434']
+        labels:
+          machine: 'hearth'
+          role: 'embedding'
+
+  # --- Enrichment API ---
+  - job_name: 'enrichment-api'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['enrichment-api.context.svc.cluster.local:8100']
+        labels:
+          machine: 'hearth'
+          role: 'enrichment'
+
+  # --- Control Plane: Observer (Hearth k3d) ---
+  - job_name: 'observer'
+    metrics_path: /metrics
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['observer.inference-platform.svc.cluster.local:8081']
+        labels:
+          machine: 'hearth'
+          role: 'control-plane'
+          component: 'observer'
+
+  # --- Control Plane: Broadcaster (Hearth k3d) ---
+  - job_name: 'broadcaster'
+    metrics_path: /metrics
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['broadcaster.inference-platform.svc.cluster.local:8090']
+        labels:
+          machine: 'hearth'
+          role: 'control-plane'
+          component: 'broadcaster'
+
+  # --- Control Plane: Arbiter (Bifrost, Phase 1) ---
+  - job_name: 'bifrost-arbiter'
+    metrics_path: /metrics
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['192.168.2.33:8082']
+        labels:
+          machine: 'bifrost'
+          role: 'control-plane'
+          component: 'arbiter'
+
+  # --- Complexity Router (Bifrost, Phase 1) ---
+  - job_name: 'bifrost-router'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['192.168.2.33:8080']
+        labels:
+          machine: 'bifrost'
+          role: 'router'
+
+  # --- Prometheus self-monitoring ---
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # --- Forge (Phase 2, uncomment when online) ---
+  # - job_name: 'forge-ollama'
+  #   static_configs:
+  #     - targets: ['192.168.2.TBD:11434']
+  #       labels:
+  #         machine: 'forge'
+  #         role: 'inference'

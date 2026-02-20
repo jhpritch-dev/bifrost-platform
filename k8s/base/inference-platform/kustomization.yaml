@@ -1,0 +1,10 @@
+# k8s/base/inference-platform/kustomization.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: inference-platform
+resources:
+  - observer.yaml
+  - broadcaster.yaml
+  # Phase 1 Bifrost-side (not deployed via k8s):
+  #   Arbiter   → localhost:8082 on Bifrost
+  #   Router    → localhost:8080 on Bifrost
