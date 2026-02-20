@@ -1,0 +1,33 @@
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Secrets
+*.key
+*.pem
+.env
+.env.*
+!.env.example
+sops.yaml
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Node
+node_modules/
+
+# Model files (too large for git)
+*.gguf
+*.bin
+*.safetensors
+
+# Logs
+*.log
