@@ -4,6 +4,14 @@
 
 BIFROST is a distributed AI inference platform that routes coding and knowledge work across heterogeneous local hardware based on cognitive complexity, achieving **85–92% cost savings** versus cloud-only approaches. The system spans three physical machines, supports eight inference endpoints (5 local + 3 cloud) plus a dedicated micro-inference tier, and operates autonomously with hierarchical escalation — cloud APIs are a surgical supplement, not the default compute layer.
 
+> **Industry validation:** AT&T independently arrived at the same architecture — rearchitecting around small language models and multi-agent orchestration to achieve [90% cost savings at 27 billion tokens/day](https://venturebeat.com/orchestration/8-billion-tokens-a-day-forced-at-and-t-to-rethink-ai-orchestration-and-cut). BIFROST proves the same thesis works on consumer hardware.
+
+---
+
+## Why
+
+Cloud-only AI inference is expensive and unnecessary for most coding tasks. **~80% of development work is MODERATE complexity** — autocomplete, refactoring, function-level edits — and can be handled by local 7B–14B models at electricity cost. BIFROST routes every request to the cheapest tier capable of handling it, reserving cloud APIs for the genuinely hard problems.
+
 ---
 
 ## Architecture
@@ -12,7 +20,7 @@ BIFROST is a distributed AI inference platform that routes coding and knowledge 
 
 ```mermaid
 graph TB
-    subgraph BIFROST_NET["192.168.2.x · 2.5GbE + Tailscale Overlay"]
+    subgraph BIFROST_NET["Local LAN · 2.5GbE + Tailscale Overlay"]
         direction TB
 
         subgraph BIF["BIFROST — Primary Workstation"]
@@ -31,7 +39,7 @@ graph TB
             H_IGPU["Vega 8 iGPU · ROCm\nEmbedding · Doc Classification"]
             H_K3D["k3d Cluster · inference-platform"]
             H_SERVICES["Ollama-embed · ChromaDB\nPrometheus · Grafana\nObserver :8081 · Broadcaster :8090"]
-            H_STORAGE["NVMe WARM · Storage Spaces COLD\nSMB: \\\\HEARTH\\net-ssd"]
+            H_STORAGE["SMB Shares · WARM/COLD Storage\nNVMe + Storage Spaces Pool"]
             H_DOCKER["Docker Compose Services\nImmich · Home Assistant · Jellyfin\nPaperless-ngx · n8n"]
         end
 
@@ -299,9 +307,9 @@ The savings come from one principle: **~80% of coding work is MODERATE complexit
 - [ ] `/system/status` API live
 - [ ] Grafana dashboards for mode + transitions
 
-**Phase 2:** Forge integration → JARVIS mode  
-**Phase 3:** AUTOPILOT pipeline + cloud APIs  
-**Phase 4:** Remote access + NOMAD mode  
+**Phase 2:** Forge integration → JARVIS mode
+**Phase 3:** AUTOPILOT pipeline + cloud APIs
+**Phase 4:** Remote access + NOMAD mode
 **Phase 5:** Optimization + production hardening
 
 ---
@@ -341,4 +349,4 @@ TBD
 
 ---
 
-*Built by John Privett — architecture designed in collaboration with Claude (Anthropic).*
+*Built by John H. Pritchard — architecture designed in collaboration with Claude (Anthropic).*
