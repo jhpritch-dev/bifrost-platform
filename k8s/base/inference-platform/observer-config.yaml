@@ -12,7 +12,6 @@ data:
   CLOUD_GROQ_URL: "https://api.groq.com"
   FORGE_NPU_URL: ""
   FORGE_OLLAMA_URL: "http://192.168.2.50:11434"
-  FORGE_LAN_URL: "http://192.168.2.50:11434"
   FORGE_TAILSCALE_URL: ""
   HEARTH_5700XT_URL: "http://192.168.2.4:11434"
   HEARTH_EMBED_URL: "http://ollama-embed.context.svc.cluster.local:11434"
@@ -20,4 +19,5 @@ data:
   HEARTH_VEGA8_URL: "http://192.168.2.4:11436"
   OBSERVER_POLL_INTERVAL: "30"
   OBSERVER_PROBE_TIMEOUT: "5"
+
 
