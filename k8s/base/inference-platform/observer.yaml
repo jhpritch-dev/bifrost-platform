@@ -23,7 +23,7 @@ spec:
     spec:
       containers:
       - name: observer
-        image: bifrost/observer:4.0
+        image: bifrost/observer:3.0
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8081
@@ -67,3 +67,4 @@ spec:
     port: 8081
     targetPort: 8081
   type: ClusterIP
+
