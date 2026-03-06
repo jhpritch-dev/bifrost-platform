@@ -40,7 +40,7 @@ spec:
         - name: HEARTH_K3D_API_URL
           value: "https://kubernetes.default.svc"
         - name: FORGE_LAN_URL
-          value: ""
+          "http://192.168.2.50:11434"
         - name: FORGE_TAILSCALE_URL
           value: ""
         - name: FORGE_NPU_PROBE_URL
