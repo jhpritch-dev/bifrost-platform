@@ -1,0 +1,21 @@
+# k8s/base/inference-platform/observer-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: observer-config
+  namespace: inference-platform
+data:
+  BIFROST_CPU_URL: "http://192.168.2.33:11435"
+  BIFROST_GPU_URL: "http://192.168.2.33:11434"
+  CLOUD_ANTHROPIC_URL: "https://api.anthropic.com"
+  CLOUD_GEMINI_URL: "https://generativelanguage.googleapis.com"
+  CLOUD_GROQ_URL: "https://api.groq.com"
+  FORGE_NPU_URL: ""
+  FORGE_OLLAMA_URL: "http://192.168.2.50:11434"
+  FORGE_TAILSCALE_URL: ""
+  HEARTH_5700XT_URL: "http://192.168.2.4:11434"
+  HEARTH_EMBED_URL: "http://ollama-embed.context.svc.cluster.local:11434"
+  HEARTH_K3D_URL: "http://localhost:6443"
+  HEARTH_VEGA8_URL: "http://192.168.2.4:11436"
+  OBSERVER_POLL_INTERVAL: "30"
+  OBSERVER_PROBE_TIMEOUT: "5"

@@ -1,5 +1,5 @@
 # k8s/base/inference-platform/observer.yaml
-# Observer v3 — Signal collector for BIFROST control plane
+# Observer v4 — Signal collector for BIFROST control plane
 # Polls all inference endpoints every 30s, produces signal snapshots
 ---
 apiVersion: apps/v1
@@ -23,30 +23,14 @@ spec:
     spec:
       containers:
       - name: observer
-        image: bifrost/observer:3.0
+        image: bifrost/observer:4.0
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8081
           name: http
-        env:
-        - name: OBSERVER_POLL_INTERVAL
-          value: "30"
-        - name: OBSERVER_PROBE_TIMEOUT
-          value: "5"
-        - name: BIFROST_OLLAMA_URL
-          value: "http://192.168.2.33:11434"
-        - name: HEARTH_EMBED_URL
-          value: "http://ollama-embed.context.svc.cluster.local:11434"
-        - name: HEARTH_K3D_API_URL
-          value: "https://kubernetes.default.svc"
-        - name: FORGE_LAN_URL
-          "http://192.168.2.50:11434"
-        - name: FORGE_TAILSCALE_URL
-          value: ""
-        - name: FORGE_NPU_PROBE_URL
-          value: ""
-        - name: ANTHROPIC_API_URL
-          value: "https://api.anthropic.com"
+        envFrom:
+        - configMapRef:
+            name: observer-config
         resources:
           requests:
             cpu: 50m
