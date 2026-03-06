@@ -334,3 +334,5 @@ tabAutocompleteModel:
 ---
 
 *End of v2.8 Update Patch*
+
+| 2026-03-06 | **2.9** | **Forge online — JARVIS achieved.** Forge (Bosgame M5) arrived and fully configured. Win11 debloat applied. Ollama installed as scheduled task (BIFROST-Forge-Ollama), PATH set Machine-level. UMA Frame Buffer confirmed 96GB (AMD CBS → NBIO → GFX Configuration). All four models validated: qwen2.5:72b, qwen2.5-coder:32b, qwen2.5-coder:14b, qwen2.5-coder:7b. F-Multi profile live: 72B (57.6GB) + 7B (7.6GB) simultane
