@@ -36,6 +36,8 @@ const PRP   = "#8658C8";
 
 const BAND_C = { TRIVIAL: GRN, MODERATE: BLU, COMPLEX: ORG, FRONTIER: PRP };
 const TIER_C = {
+  "1a-hearth":   "#3DB87A",
+  "1a-overflow": "#2EA86A",
   "1a-coder":    GRN,
   "1a-instruct": "#4CB890",
   "1b":          BLU,
@@ -1182,7 +1184,14 @@ function CostPanel({ costDay, costWeek, costMonth, budgetDay }) {
 // ═══════════════════════════════════════════════════════════
 function SignalsPanel({ signals, arbiter }) {
   const entries = Object.entries(signals || {});
-  const allLive = entries.every(([, v]) => v);
+  // Signals excluded from health score — stubs or future phases not yet active
+  const STUB_SIGNALS = new Set([
+    "forge_tailscale_reachable",  // Phase 4
+    "forge_npu_available",         // Phase 3 stub
+    "hearth_k3d_healthy",          // auth issue, low priority
+  ]);
+  const healthEntries = entries.filter(([k]) => !STUB_SIGNALS.has(k));
+  const allLive = healthEntries.every(([, v]) => v);
 
   return (
     <Panel span="1 / -1">
@@ -1244,8 +1253,8 @@ function SignalsPanel({ signals, arbiter }) {
         <div style={{ minWidth: 120, textAlign: "center" }}>
           <Label style={{ textAlign: "center" }}>Fleet Health</Label>
           <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 28, color: allLive ? GRN : AMB, fontWeight: 600 }}>
-            {entries.filter(([, v]) => v).length}
-            <span style={{ fontSize: 14, color: TXD }}>/{entries.length}</span>
+            {healthEntries.filter(([, v]) => v).length}
+            <span style={{ fontSize: 14, color: TXD }}>/{healthEntries.length}</span>
           </div>
           <div style={{ fontSize: 9, color: allLive ? GRN : AMB, fontFamily: "Plus Jakarta Sans, sans-serif", marginTop: 4 }}>
             {allLive ? "All signals nominal" : "Degraded signals"}
