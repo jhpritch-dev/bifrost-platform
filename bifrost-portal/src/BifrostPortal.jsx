@@ -452,6 +452,7 @@ function ModeHero({ status }) {
   const conf = sigs.length ? sigs.filter(Boolean).length / sigs.length : 0;
   const modeColor = MODE_C[mode] || GRN;
   const tiers     = status?.tiers || [];
+  const activeTierSet = new Set(tiers.filter(t => t.status !== "stub").map(t => t.tier));
   return (
     <Panel
       span="1 / -1"
@@ -498,7 +499,7 @@ function ModeHero({ status }) {
           <div style={{ fontSize: 8.5, color: TXM, fontFamily: "Plus Jakarta Sans, sans-serif", textTransform: "uppercase", letterSpacing: "0.12em", marginBottom: 10 }}>Available Tiers</div>
           <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
             {Object.entries(TIER_C).map(([tier, color]) => {
-              const on = tiers.includes(tier);
+              const on = activeTierSet.has(tier);
               return (
                 <div key={tier} style={{
                   fontFamily: "'JetBrains Mono', monospace", fontSize: 9,
