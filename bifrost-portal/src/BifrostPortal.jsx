@@ -37,7 +37,6 @@ const PRP   = "#8658C8";
 const BAND_C = { TRIVIAL: GRN, MODERATE: BLU, COMPLEX: ORG, FRONTIER: PRP };
 const TIER_C = {
   "1a-hearth":   "#3DB87A",
-  "1a-overflow": "#2EA86A",
   "1a-coder":    GRN,
   "1a-instruct": "#4CB890",
   "1b":          BLU,
@@ -802,7 +801,7 @@ function ForgeCard({ data, signals }) {
 
       {/* Signals */}
       <div style={{ marginTop: 10, display: "flex", gap: 10, justifyContent: "flex-end" }}>
-        {[["lan reachable", signals?.forge_lan_reachable], ["ollama live", signals?.forge_ollama_live]].map(([label, val]) => (
+        {[["lan reachable", signals?.forge_lan_reachable]].map(([label, val]) => (
           <div key={label} style={{ display: "flex", alignItems: "center", gap: 4 }}>
             <span style={{ fontSize: 8.5, color: TXD, fontFamily: "'JetBrains Mono', monospace" }}>{label}</span>
             <PulseDot alive={val} size={5} />
@@ -854,7 +853,7 @@ function HearthCard({ data, signals }) {
   // relevant signals
   const sigMap = {
     "ollama live":  signals?.hearth_ollama_live,
-    "vega8 live":   signals?.hearth_vega8_live,
+    "vega8 live":   signals?.hearth_embed_live,   // proxy: embed served by Vega 8
     "embed live":   signals?.hearth_embed_live,
   };
 
