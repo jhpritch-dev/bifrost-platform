@@ -361,7 +361,11 @@ const CustomTooltip = ({ active, payload, label }) => {
 function TopNav({ status, surface, setSurface, mockOverride, setMockOverride }) {
   const mode      = status?.mode || "—";
   const modeColor = MODE_C[mode] || TXD;
-  const tiers     = status?.tiers || [];
+  const rawTiers  = status?.tiers || [];
+  // Broadcaster returns tier objects {tier, status, model, machine} — build a Set of active names
+  const activeTiers = new Set(
+    rawTiers.filter(t => t.status !== "stub").map(t => t.tier)
+  );
 
   return (
     <div style={{
@@ -396,7 +400,7 @@ function TopNav({ status, surface, setSurface, mockOverride, setMockOverride }) 
       {/* Tier strip */}
       <div style={{ display: "flex", gap: 4, flex: 1, justifyContent: "center", overflow: "hidden", minWidth: 0 }}>
         {Object.entries(TIER_C).map(([tier, color]) => {
-          const on = tiers.includes(tier);
+          const on = activeTiers.has(tier);
           return (
             <div key={tier} style={{
               fontFamily: "'JetBrains Mono', monospace", fontSize: 8.5,
@@ -1186,9 +1190,11 @@ function SignalsPanel({ signals, arbiter }) {
   const entries = Object.entries(signals || {});
   // Signals excluded from health score — stubs or future phases not yet active
   const STUB_SIGNALS = new Set([
-    "forge_tailscale_reachable",  // Phase 4
-    "forge_npu_available",         // Phase 3 stub
-    "hearth_k3d_healthy",          // auth issue, low priority
+    "forge_tailscale_reachable",  // Phase 4 — not configured
+    "forge_npu_available",         // Phase 3 stub — not configured
+    "hearth_k3d_healthy",          // known auth issue, low priority
+    "forge_model_loaded",          // operational state (idle Forge ≠ fault); forge_lan_reachable covers health
+    "forge_gpu_offload",           // operational state (no models loaded ≠ fault)
   ]);
   const healthEntries = entries.filter(([k]) => !STUB_SIGNALS.has(k));
   const allLive = healthEntries.every(([, v]) => v);
