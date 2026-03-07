@@ -1616,11 +1616,11 @@ function ProjectSidebar({
             }}>Select a project or session first</div>
           )}
 
-          <label htmlFor="bifrost-file-input" style={{ display: "block", cursor: activeNs ? "pointer" : "not-allowed" }}>
           <div
             onDragOver={e => { e.preventDefault(); if (activeNs) setDragOver(true); }}
             onDragLeave={() => setDragOver(false)}
             onDrop={activeNs ? handleDrop : e => e.preventDefault()}
+            onClick={e => { e.stopPropagation(); if (activeNs) fileInputRef.current?.click(); }}
             style={{
               border: `1px dashed ${dragOver ? GRN : activeNs ? BORDB : BORD}`,
               borderRadius: 6, padding: "14px 10px", textAlign: "center",
@@ -1638,12 +1638,9 @@ function ProjectSidebar({
               PDF · DOCX · MD · TXT
             </div>
           </div>
-          </label>
           <input
-            id="bifrost-file-input"
             ref={fileInputRef} type="file" multiple accept=".pdf,.docx,.md,.txt"
             style={{ display: "none" }}
-            disabled={!activeNs}
             onChange={e => { onDrop(Array.from(e.target.files)); e.target.value = ""; }}
           />
           {uploads.map(u => <UploadItem key={u.id} item={u} />)}
