@@ -8,9 +8,9 @@ import {
 // CONFIG — flip MOCK to false when deployed on Hearth :3100
 // ═══════════════════════════════════════════════════════════
 const BROADCASTER = "http://192.168.2.4:8092";
-const PROMETHEUS  = "http://192.168.2.4:9090";
+const PROMETHEUS  = "http://192.168.2.4:3110/prom";
 const POLL_MS     = 15_000;
-const MOCK        = true;
+const MOCK        = false;
 
 // ═══════════════════════════════════════════════════════════
 // DESIGN TOKENS
@@ -147,11 +147,44 @@ const M_METRICS = {
 // ═══════════════════════════════════════════════════════════
 // API
 // ═══════════════════════════════════════════════════════════
+function deriveStatus(raw) {
+  const sig = raw.signals || {};
+  const sigBool = (k) => sig[k]?.value === "TRUE";
+  const normalSignals = Object.fromEntries(
+    Object.entries(sig).map(([k, v]) => [k, v?.value === "TRUE"])
+  );
+  const bifrostModels = raw.bifrost_loaded_models || [];
+  const bCoder    = bifrostModels.find(m => m.includes("coder")) || bifrostModels[0] || "—";
+  const bInstruct = bifrostModels.find(m => !m.includes("coder")) || "—";
+  const forgeTiers = (raw.tiers || []).filter(t => t.machine === "Forge");
+  const machines = {
+    bifrost: {
+      up:      sigBool("bifrost_ollama_live"),
+      profile: raw.bifrost_profile || null,
+      gpu: { label:"9070 XT", port:11434, model:bCoder,    vram_used:null, vram_total:14.5, tok_s:null },
+      cpu: { label:"CPU",     port:11435, model:bInstruct, tok_s:null, role:"classifier" },
+    },
+    hearth: {
+      up: sigBool("hearth_ollama_live"),
+      primary: { port:11434, gpu:"RX 5700 XT",  model:"qwen2.5-coder:7b", vram_used:null, vram_total:8.0,  tok_s:null },
+      vega8:   { port:11436, gpu:"Vega 8 iGPU", model:"qwen3.5:4b QM",   gtt_used:null,  gtt_total:16.0, tok_s:null, embed_loaded:sigBool("hearth_embed_live") },
+    },
+    forge: {
+      up:         sigBool("forge_lan_reachable"),
+      profile:    raw.forge_profile || null,
+      slots:      forgeTiers.map(t => ({ tier:t.tier, model:t.model, vram_used:0, tok_s:null, active:t.status==="available"||t.status==="healthy" })),
+      vram_used:  (raw.forge_vram_used_bytes || 0) / 1e9,
+      vram_total: 96.0,
+    },
+  };
+  return { ...raw, signals: normalSignals, machines };
+}
+
 async function fetchStatus() {
   if (MOCK) return M_STATUS;
   try {
     const r = await fetch(`${BROADCASTER}/system/status`);
-    return await r.json();
+    return deriveStatus(await r.json());
   } catch { return M_STATUS; }
 }
 
@@ -260,7 +293,7 @@ function BigNum({ value, unit, color, size = 34 }) {
 }
 
 function VramBar({ used, total, color = BLU }) {
-  const pct = Math.min((used / total) * 100, 100);
+  const pct = (used == null || !total) ? 0 : Math.min((used / total) * 100, 100);
   const warn = pct > 85;
   const barColor = warn ? AMB : color;
   return (
@@ -507,7 +540,7 @@ function MachineCard({ name, data, signals }) {
         <div>
           <div style={{ fontSize: 8.5, color: TXM, fontFamily: "Plus Jakarta Sans, sans-serif", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 3 }}>Output</div>
           <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 18, color: TX }}>
-            {data.tok_s}<span style={{ fontSize: 9, color: TXD }}> tok/s</span>
+            {data.tok_s ?? "—"}<span style={{ fontSize: 9, color: TXD }}> tok/s</span>
           </div>
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 5, alignItems: "flex-end" }}>
@@ -599,7 +632,7 @@ function BifrostCard({ data, signals }) {
         }}>{gpu.model}</div>
         <VramBar used={gpu.vram_used} total={gpu.vram_total} color={GRN} />
         <div style={{ marginTop: 8, display: "flex", alignItems: "baseline", gap: 3 }}>
-          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 16, color: TX }}>{gpu.tok_s}</span>
+          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 16, color: TX }}>{gpu.tok_s ?? "—"}</span>
           <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: TXD }}> tok/s</span>
         </div>
       </div>
@@ -629,7 +662,7 @@ function BifrostCard({ data, signals }) {
           whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
         }}>{cpu.model}</div>
         <div style={{ display: "flex", alignItems: "baseline", gap: 3 }}>
-          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 16, color: TX }}>{cpu.tok_s}</span>
+          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 16, color: TX }}>{cpu.tok_s ?? "—"}</span>
           <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: TXD }}> tok/s</span>
         </div>
       </div>
@@ -729,7 +762,7 @@ function ForgeCard({ data, signals }) {
               }}>{slot.model}</div>
               {slot.active && (
                 <div style={{ display: "flex", alignItems: "baseline", gap: 2 }}>
-                  <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 14, color: TX }}>{slot.tok_s}</span>
+                  <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 14, color: TX }}>{slot.tok_s ?? "—"}</span>
                   <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: TXD }}>tok/s</span>
                 </div>
               )}
@@ -843,7 +876,7 @@ function HearthCard({ data, signals }) {
         <VramBar used={primary.vram_used} total={primary.vram_total} color={BLU} />
         <div style={{ marginTop: 8, display: "flex", alignItems: "baseline", gap: 3 }}>
           <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 16, color: TX }}>
-            {primary.tok_s}
+            {primary.tok_s ?? "—"}
           </span>
           <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: TXD }}>tok/s</span>
         </div>
@@ -876,7 +909,7 @@ function HearthCard({ data, signals }) {
         <div style={{ marginTop: 8, display: "flex", justifyContent: "space-between", alignItems: "flex-end" }}>
           <div style={{ display: "flex", alignItems: "baseline", gap: 3 }}>
             <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 16, color: TX }}>
-              {vega8.tok_s}
+              {vega8.tok_s ?? "—"}
             </span>
             <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: TXD }}>tok/s</span>
           </div>
@@ -1325,3 +1358,15 @@ export default function BifrostPortal() {
     </>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
