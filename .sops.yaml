@@ -1,0 +1,6 @@
+﻿creation_rules:
+  - path_regex: \.sops\.yaml$
+    age: >-
+      # Replace with your age public key after running: age-keygen
+      # Store private key securely, NOT in this repo
+      age1xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
