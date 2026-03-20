@@ -536,6 +536,16 @@ async def chat_completions(request: Request):
                     escalated=escalated,
                     escalation_from=cascade[0] if escalated else None,
                 ))
+                # Strip fences for T1A tiers
+                if tier.value in {"1a-coder", "1a-hearth", "1a-overflow", "1a-instruct"}:
+                    try:
+                        _txt = result["choices"][0]["message"]["content"]
+                        _txt = _txt.strip()
+                        _txt = re.sub(r"^```[a-zA-Z]*\r?\n", "", _txt)
+                        _txt = re.sub(r"\r?\n```$", "", _txt)
+                        result["choices"][0]["message"]["content"] = _txt.strip()
+                    except (KeyError, IndexError):
+                        pass
                 response = JSONResponse(content=result)
                 add_routing_headers(response, band, tier, classification)
                 return response
@@ -884,6 +894,6 @@ if __name__ == "__main__":
         "main:app",
         host=settings.host,
         port=settings.port,
-        reload=True,
+        reload=False,
         log_level="info",
     )
