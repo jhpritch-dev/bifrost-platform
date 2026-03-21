@@ -31,6 +31,7 @@ class OperatingMode(str, Enum):
     CLOUD_PLUS = "CLOUD_PLUS"
     CLOUD_ONLY = "CLOUD_ONLY"
     WORKSHOP_OFFLINE = "WORKSHOP_OFFLINE"
+    RELAY = "RELAY"             # Bifrost = pure orchestration, zero local inference
 
 
 class Tier(str, Enum):
@@ -45,6 +46,13 @@ class Tier(str, Enum):
     T3_GEMINI = "3-gemini"
     T3_FAST = "3-fast"
     T_NPU   = "npu"
+
+    # ── Future node placeholders (uncomment when hardware arrives) ──
+    # T1A_FORGE2  = "1a-forge2"   # Second Forge node Tier 1a
+    # T2_FORGE2   = "2-forge2"    # Second Forge node Tier 2
+    # T2_5_FORGE2 = "2.5-forge2"  # Second Forge node Tier 2.5
+    # T1A_NODE4   = "1a-node4"    # Fourth node Tier 1a (generic)
+    # T2_NODE4    = "2-node4"     # Fourth node Tier 2 (generic)
 
 
 class BifrostProfile(str, Enum):
@@ -119,6 +127,23 @@ TIER_BACKENDS = {
         "provider": "groq",
         "model": "llama-3.3-70b-versatile",
     },
+
+    # ── Future node placeholders — uncomment and set IP when hardware arrives ──
+    # Tier.T1A_FORGE2: {
+    #     "type": "ollama",
+    #     "model": "bifrost-1a-coder",      # Same Modelfile, new node
+    #     "base_url": "http://192.168.2.51:11434",  # Assign IP at router
+    # },
+    # Tier.T2_FORGE2: {
+    #     "type": "ollama",
+    #     "model": "bifrost-t2",
+    #     "base_url": "http://192.168.2.51:11434",
+    # },
+    # Tier.T2_5_FORGE2: {
+    #     "type": "ollama",
+    #     "model": "bifrost-t2p5",
+    #     "base_url": "http://192.168.2.51:11434",
+    # },
 }
 
 
@@ -157,6 +182,14 @@ CASCADE_TABLES = {
         ComplexityBand.TRIVIAL:  [Tier.T3_FAST],
         ComplexityBand.MODERATE: [Tier.T3_FAST],
         ComplexityBand.COMPLEX:  [Tier.T3_GEMINI],
+        ComplexityBand.FRONTIER: [Tier.T3_CLAUDE],
+    },
+    # RELAY: Bifrost = pure orchestration. No Bifrost-local inference tiers.
+    # All requests route to Hearth or Forge. Bifrost GPU free for other tasks.
+    OperatingMode.RELAY: {
+        ComplexityBand.TRIVIAL:  [Tier.T_NPU, Tier.T1A_HEARTH, Tier.T1A_OVERFLOW],
+        ComplexityBand.MODERATE: [Tier.T1A_HEARTH, Tier.T1A_OVERFLOW, Tier.T2],
+        ComplexityBand.COMPLEX:  [Tier.T2, Tier.T2_5, Tier.T3_CLAUDE],
         ComplexityBand.FRONTIER: [Tier.T3_CLAUDE],
     },
 }
