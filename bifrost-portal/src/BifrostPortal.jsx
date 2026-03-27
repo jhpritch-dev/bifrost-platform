@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   PieChart, Pie, Cell, ResponsiveContainer,
   AreaChart, Area, Tooltip,
@@ -8,11 +8,11 @@ import {
 // CONFIG — flip MOCK to false when deployed on Hearth :3100
 // ═══════════════════════════════════════════════════════════
 const BROADCASTER = "http://192.168.2.4:8092";
-const ARBITER     = "http://192.168.2.33:8082";
+const ARBITER     = "http://192.168.2.4:8082";
 const PROMETHEUS  = "http://192.168.2.4:3110/prom";
 const POLL_MS     = 15_000;
 const MOCK        = false;
-const ROUTER      = "http://192.168.2.33:8080";
+const ROUTER      = "http://192.168.2.4:8080";
 const KB          = "http://192.168.2.4:8091";
 const KB_SUPPORTED = [".pdf", ".docx", ".md", ".txt"];
 
@@ -49,7 +49,8 @@ const TIER_C = {
 const MODE_C = {
   JARVIS: GRN, WORKSHOP: BLU, WORKSTATION: AMB,
   REMOTE: PRP, NOMAD: ORG,
-  "CLOUD-ONLY": RSE, "WORKSHOP-OFFLINE": "#6880C0",
+  "CLOUD-ONLY": RSE, "WORKSHOP-OFFLINE": "#6880C0", "WORKSHOP_OFFLINE": "#6880C0",
+  RELAY: "#3090A0",
 };
 const MODE_DESC = {
   JARVIS:              "All tiers available. Full local inference stack. Maximum parallelism.",
@@ -59,6 +60,8 @@ const MODE_DESC = {
   NOMAD:               "Forge portable. Disconnected from LAN. Cloud fallback active.",
   "CLOUD-ONLY":        "Emergency mode. Embeddings + cloud APIs only.",
   "WORKSHOP-OFFLINE":  "Privacy mode. Zero cloud egress. Local inference only.",
+  "WORKSHOP_OFFLINE":  "Privacy mode. Zero cloud egress. Local inference only.",
+  RELAY:               "Relay mode. Bifrost is pure orchestration -- all inference on Hearth + Forge. Bifrost GPU free.",
 };
 
 // ═══════════════════════════════════════════════════════════
@@ -202,6 +205,7 @@ async function fetchArbiter() {
     const last = transitions?.[0];
     return {
       connected:       true,
+      confirmed_mode:  mode.confirmed_mode || null,
       debouncing:      !!mode.candidate_mode,
       last_transition: last ? new Date(last.timestamp * 1000).toISOString() : null,
       reason:          last ? `${last.trigger}` : null,
@@ -249,12 +253,56 @@ async function fetchMetrics() {
       p90:      Math.round(getVal(p90r)),
       p99:      Math.round(getVal(p99r)),
       sparkline: M_METRICS.sparkline, // TODO: range query for sparkline
-      costDay:   M_METRICS.costDay,
+      costDay:   M_METRICS.costDay,   // supplemented by telemetry in ObserveSurface
       costWeek:  M_METRICS.costWeek,
       costMonth: M_METRICS.costMonth,
       budgetDay: M_METRICS.budgetDay,
     };
   } catch { return M_METRICS; }
+}
+
+
+
+// ═══════════════════════════════════════════════════════════
+// FETCH /api/ps — per-machine model + VRAM snapshot
+// ═══════════════════════════════════════════════════════════
+async function fetchPs() {
+  try {
+    const r = await fetch(`${BROADCASTER}/api/ps`);
+    return await r.json();
+  } catch { return null; }
+}
+
+async function fetchFleetConfig() {
+  try {
+    const r = await fetch(`${ROUTER}/fleet/config`);
+    return await r.json();
+  } catch { return null; }
+}
+
+async function fetchFleetPs() {
+  try {
+    const r = await fetch(`${ROUTER}/fleet/ps`);
+    return await r.json();
+  } catch { return null; }
+}
+
+// ═══════════════════════════════════════════════════════════
+// FETCH TELEMETRY — Router SQLite events
+// ═══════════════════════════════════════════════════════════
+async function fetchTelemetry() {
+  try {
+    const [bands, spend, recent] = await Promise.all([
+      fetch(`${ROUTER}/telemetry/bands`).then(r => r.json()),
+      fetch(`${ROUTER}/telemetry/cloud-spend`).then(r => r.json()),
+      fetch(`${ROUTER}/telemetry/recent?n=10`).then(r => r.json()),
+    ]);
+    return {
+      bands:       bands,                         // { TRIVIAL: N, MODERATE: N, ... }
+      cloudSpend:  spend,                         // { total_usd, by_tier }
+      recentEvents: recent.events || [],          // array of InferenceEvent rows
+    };
+  } catch { return { bands: {}, cloudSpend: { total_usd: 0, by_tier: {} }, recentEvents: [] }; }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -357,11 +405,45 @@ const CustomTooltip = ({ active, payload, label }) => {
 // ═══════════════════════════════════════════════════════════
 // TOP NAV
 // ═══════════════════════════════════════════════════════════
-function TopNav({ status, surface, setSurface, mockOverride, setMockOverride }) {
+const OFFLINE_MODES = new Set(["WORKSHOP_OFFLINE", "JARVIS_OFFLINE"]);
+
+function TopNav({ status, surface, setSurface, mockOverride, setMockOverride, setStatus }) {
   const mode      = status?.mode || "—";
   const modeColor = MODE_C[mode] || TXD;
   const rawTiers  = status?.tiers || [];
-  // Broadcaster returns tier objects {tier, status, model, machine} — build a Set of active names
+  const isOffline = OFFLINE_MODES.has(mode);
+  const [privacyLoading, setPrivacyLoading] = useState(false);
+
+  // Activate/deactivate privacy mode via Router /mode endpoint
+  async function togglePrivacy() {
+    if (privacyLoading) return;
+    setPrivacyLoading(true);
+    const targetMode = isOffline ? "JARVIS" : "JARVIS_OFFLINE";
+    // Optimistic update — flip mode immediately in UI
+    if (setStatus && status) {
+      setStatus(prev => ({ ...prev, mode: targetMode }));
+    }
+    // Activate/deactivate privacy mode via Arbiter /mode endpoint (bypasses debounce)
+    try {
+      await fetch(`${ARBITER}/mode`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: targetMode }),
+      });
+      // Also update Router so cascade tables are correct immediately
+      await fetch(`${ROUTER}/mode`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: targetMode }),
+      });
+    } catch (e) {
+      console.error("Privacy toggle failed:", e);
+      // Revert on failure
+      if (setStatus && status) setStatus(prev => ({ ...prev, mode: mode }));
+    }
+    setPrivacyLoading(false);
+  }
+
   const activeTiers = new Set(
     rawTiers.filter(t => t.status !== "stub").map(t => t.tier)
   );
@@ -412,6 +494,35 @@ function TopNav({ status, surface, setSurface, mockOverride, setMockOverride }) 
             }}>{tier}</div>
           );
         })}
+      </div>
+
+      {/* Privacy toggle + NO CLOUD badge */}
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        {isOffline && (
+          <div style={{
+            fontFamily: "'JetBrains Mono', monospace", fontSize: 8,
+            color: AMB, background: `${AMB}18`,
+            border: `1px solid ${AMB}50`,
+            borderRadius: 3, padding: "2px 8px",
+            letterSpacing: "0.08em", fontWeight: 600,
+            animation: "blink 2s ease-in-out infinite",
+          }}>NO CLOUD</div>
+        )}
+        <button
+          onClick={togglePrivacy}
+          disabled={privacyLoading}
+          title={isOffline ? "Disable privacy mode" : "Enable privacy mode (WORKSHOP-OFFLINE)"}
+          style={{
+            fontFamily: "'JetBrains Mono', monospace", fontSize: 8,
+            color: isOffline ? AMB : TXD,
+            background: isOffline ? `${AMB}20` : `${BORD}`,
+            border: `1px solid ${isOffline ? AMB + "60" : BORDB}`,
+            borderRadius: 4, padding: "3px 9px",
+            cursor: privacyLoading ? "wait" : "pointer",
+            transition: "all 0.3s",
+            boxShadow: isOffline ? `0 0 8px ${AMB}30` : "none",
+          }}
+        >{privacyLoading ? "…" : isOffline ? "🔒 PRIVATE" : "🔓 RELAY"}</button>
       </div>
 
       {/* Live/Mock toggle */}
@@ -1274,7 +1385,7 @@ function SignalsPanel({ signals, arbiter }) {
 // ═══════════════════════════════════════════════════════════
 // OBSERVE SURFACE
 // ═══════════════════════════════════════════════════════════
-function ObserveSurface({ status, metrics }) {
+function ObserveSurface({ status, metrics, telemetry }) {
   if (!status || !metrics) {
     return (
       <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -1307,9 +1418,109 @@ function ObserveSurface({ status, metrics }) {
           costMonth={metrics.costMonth} budgetDay={metrics.budgetDay}
         />
 
-        {/* Row 5: Signals — full width */}
+        {/* Row 5: Telemetry feed + Signals */}
+        <TelemetryFeedPanel telemetry={telemetry} />
         <SignalsPanel signals={status.signals} arbiter={status.arbiter} />
 
+      </div>
+    </div>
+  );
+}
+
+function TelemetryFeedPanel({ telemetry }) {
+  if (!telemetry) return null;
+  const events = telemetry.recentEvents || [];
+  const spend = telemetry.cloudSpend || { total_usd: 0, by_tier: {} };
+  const bands = telemetry.bands || {};
+  const total = Object.values(bands).reduce((a, b) => a + b, 0);
+
+  return (
+    <div style={{
+      gridColumn: "1 / -1",
+      background: SURF, border: `1px solid ${BORD}`,
+      borderRadius: 8, padding: "14px 16px",
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
+        <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: TXD, letterSpacing: "0.12em" }}>
+          INFERENCE TELEMETRY
+        </div>
+        <div style={{
+          fontFamily: "'JetBrains Mono', monospace", fontSize: 8,
+          color: GRN, background: `${GRN}12`, border: `1px solid ${GRN}30`,
+          borderRadius: 3, padding: "1px 6px",
+        }}>SQLite · live</div>
+        <div style={{ marginLeft: "auto", fontFamily: "'JetBrains Mono', monospace", fontSize: 8.5, color: TXD }}>
+          Cloud spend total: <span style={{ color: spend.total_usd > 0 ? ORG : GRN }}>${spend.total_usd.toFixed(4)}</span>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 16 }}>
+        {/* Band distribution from SQLite */}
+        <div style={{ flex: "0 0 200px" }}>
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: TXM, marginBottom: 6 }}>BAND DISTRIBUTION</div>
+          {total === 0 ? (
+            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: TXM }}>No events yet</div>
+          ) : (
+            Object.entries(bands).map(([band, count]) => (
+              <div key={band} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: BAND_C[band] || TXD, width: 60 }}>{band}</div>
+                <div style={{ flex: 1, height: 4, background: ELEV, borderRadius: 2, overflow: "hidden" }}>
+                  <div style={{ width: `${(count / total) * 100}%`, height: "100%", background: BAND_C[band] || TXD, borderRadius: 2 }} />
+                </div>
+                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: TXD, width: 20, textAlign: "right" }}>{count}</div>
+              </div>
+            ))
+          )}
+        </div>
+
+        {/* Recent events */}
+        <div style={{ flex: 1, overflowX: "auto" }}>
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: TXM, marginBottom: 6 }}>RECENT EVENTS</div>
+          {events.length === 0 ? (
+            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: TXM }}>No events yet — send a request through the Router</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+              {events.slice(0, 8).map((ev, i) => {
+                const tier = ev[6] || ev.tier_used || "?";
+                const band = ev[5] || ev.complexity_band || "?";
+                const latency = ev[13] || ev.latency_ms || 0;
+                const tokens = ev[12] || ev.tokens_total || 0;
+                const status = ev[15] || ev.status || "?";
+                const ts = ev[1] || ev.timestamp || 0;
+                const timeStr = ts ? new Date(ts * 1000).toLocaleTimeString() : "?";
+                const bandColor = BAND_C[band] || TXD;
+                const tierColor = TIER_C[tier] || TXD;
+                return (
+                  <div key={i} style={{
+                    display: "flex", alignItems: "center", gap: 8,
+                    padding: "3px 6px", background: ELEV, borderRadius: 4,
+                    fontFamily: "'JetBrains Mono', monospace", fontSize: 8,
+                  }}>
+                    <span style={{ color: TXM, width: 60 }}>{timeStr}</span>
+                    <span style={{ color: bandColor, width: 55 }}>{band}</span>
+                    <span style={{ color: tierColor, width: 70 }}>{tier}</span>
+                    <span style={{ color: TXD, width: 60 }}>{Math.round(latency)}ms</span>
+                    <span style={{ color: TXD, width: 45 }}>{tokens}tok</span>
+                    <span style={{ color: status === "PASS" ? GRN : RSE }}>{status}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Cloud spend by tier */}
+        {Object.keys(spend.by_tier).length > 0 && (
+          <div style={{ flex: "0 0 160px" }}>
+            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: TXM, marginBottom: 6 }}>CLOUD SPEND BY TIER</div>
+            {Object.entries(spend.by_tier).filter(([, v]) => v > 0).map(([tier, cost]) => (
+              <div key={tier} style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: TIER_C[tier] || TXD }}>{tier}</span>
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: ORG }}>${cost.toFixed(4)}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1660,6 +1871,7 @@ function ConverseSurface({ status }) {
   const [activeNs, setActiveNs] = useState({ key: "proj:default", project: "default", type: "project" });
   const [uploads, setUploads] = useState([]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [tierOverride, setTierOverride] = useState(null);
   const threadRef = useRef(null);
   const inputRef = useRef(null);
 
@@ -1767,9 +1979,11 @@ function ConverseSurface({ status }) {
     setMessages(m => [...m, { id: assistantId, role: "assistant", content: "", streaming: true }]);
 
     try {
+      const routerHeaders = { "Content-Type": "application/json" };
+      if (tierOverride) routerHeaders["X-Tier-Override"] = tierOverride;
       const resp = await fetch(`${ROUTER}/v1/chat/completions`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: routerHeaders,
         body: JSON.stringify({
           model: "auto",
           messages: [...history, { role: "user", content: userContent }],
@@ -1904,6 +2118,33 @@ function ConverseSurface({ status }) {
           )}
         </div>
 
+        {/* Tier override pills */}
+        <div style={{ borderTop: `1px solid ${BORD}`, padding: "6px 16px 0", background: SURF, flexShrink: 0, display: "flex", alignItems: "center", gap: 5 }}>
+          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: tierOverride ? AMB : TXM, marginRight: 2, letterSpacing: "0.06em" }}>
+            TIER:
+          </span>
+          {[null, "npu", "1a-hearth", "1a-coder", "1b", "2", "2.5"].map(t => {
+            const label = t === null ? "AUTO" : t;
+            const active = tierOverride === t;
+            const color = t === null ? TXM : (TIER_C[t] || TXM);
+            return (
+              <button key={label} onClick={() => setTierOverride(t)} style={{
+                fontFamily: "'JetBrains Mono', monospace", fontSize: 7.5,
+                padding: "2px 7px", borderRadius: 3, cursor: "pointer",
+                background: active ? `${color}25` : "transparent",
+                color: active ? color : TXM,
+                border: `1px solid ${active ? color + "60" : BORD}`,
+                transition: "all 0.15s",
+              }}>{label}</button>
+            );
+          })}
+          {tierOverride && (
+            <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 7.5, color: AMB, marginLeft: 4 }}>
+              ⚠ forced → {tierOverride}
+            </span>
+          )}
+        </div>
+
         {/* Input bar */}
         <div style={{ borderTop: `1px solid ${BORD}`, padding: "12px 16px", background: SURF, flexShrink: 0 }}>
           <div style={{
@@ -1950,6 +2191,597 @@ function ConverseSurface({ status }) {
 }
 
 // ═══════════════════════════════════════════════════════════
+// COMMAND SURFACE
+// ═══════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════
+// FLEET MANAGER
+// ═══════════════════════════════════════════════════════════
+const MACHINE_C = { bifrost: BLU, hearth: GRN, forge: AMB, cloud: PRP };
+
+function FleetManager({ fleetConfig, fleetPs }) {
+  const [loading, setLoading] = React.useState({});
+  const [loadResult, setLoadResult] = React.useState({});
+  const [overrides, setOverrides] = React.useState({});
+
+  const tiers = fleetConfig?.tiers || [];
+  const endpoints = fleetPs?.endpoints || [];
+
+  function getWarmth(tier) {
+    const ep = endpoints.find(e => e.base_url === tier.base_url);
+    if (!ep) return { status: "unknown", loaded: [] };
+    const loaded = Array.isArray(ep.loaded_models)
+      ? ep.loaded_models
+      : ep.loaded_models ? [ep.loaded_models] : [];
+    return { status: ep.status, loaded };
+  }
+
+  async function handleLoad(tier) {
+    const model = overrides[tier.tier] || tier.active_model;
+    setLoading(p => ({ ...p, [tier.tier]: true }));
+    setLoadResult(p => ({ ...p, [tier.tier]: null }));
+    try {
+      const resp = await fetch(`${ROUTER}/fleet/load`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tier: tier.tier, model }),
+      });
+      const data = await resp.json();
+      setLoadResult(p => ({ ...p, [tier.tier]: data.status === "loaded" ? "OK" : "ERR" }));
+    } catch (e) {
+      setLoadResult(p => ({ ...p, [tier.tier]: "ERR" }));
+    }
+    setLoading(p => ({ ...p, [tier.tier]: false }));
+  }
+
+  const localTiers = tiers.filter(t => t.machine !== "cloud");
+  const cloudTiers = tiers.filter(t => t.machine === "cloud");
+
+  function TierRow({ tier }) {
+    const warmth = getWarmth(tier);
+    const isWarm = warmth.loaded.some(m =>
+      m.replace(":latest", "") === tier.active_model.replace(":latest", "")
+    );
+    const isOnline = warmth.status === "online";
+    const mc = MACHINE_C[tier.machine] || TXD;
+    const selectedModel = overrides[tier.tier] || tier.active_model;
+    const res = loadResult[tier.tier];
+
+    return (
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "60px 90px 1fr 140px 60px 50px",
+        gap: 8, alignItems: "center",
+        padding: "7px 10px",
+        borderBottom: `1px solid ${BORD}`,
+        background: isWarm ? `${GRN}06` : "transparent",
+      }}>
+        {/* Tier badge */}
+        <div style={{
+          fontFamily: "'JetBrains Mono', monospace", fontSize: 10,
+          color: TIER_C[tier.tier] || TXD,
+          background: `${TIER_C[tier.tier] || TXD}18`,
+          border: `1px solid ${TIER_C[tier.tier] || TXD}35`,
+          borderRadius: 4, padding: "2px 6px", textAlign: "center",
+        }}>{tier.tier}</div>
+
+        {/* Machine */}
+        <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: mc }}>
+          {tier.machine}
+          <span style={{ color: TXM, marginLeft: 4 }}>
+            {isOnline ? "●" : tier.machine === "cloud" ? "–" : "○"}
+          </span>
+        </div>
+
+        {/* Model selector */}
+        {tier.type === "ollama" ? (
+          <select
+            value={selectedModel}
+            onChange={e => setOverrides(p => ({ ...p, [tier.tier]: e.target.value }))}
+            style={{
+              background: ELEV, border: `1px solid ${BORDB}`,
+              color: TX, fontFamily: "'JetBrains Mono', monospace",
+              fontSize: 9, borderRadius: 4, padding: "3px 6px",
+              cursor: "pointer",
+            }}
+          >
+            {(tier.catalog || [tier.active_model]).map(m => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+          </select>
+        ) : (
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 9, color: TXD }}>
+            {tier.active_model}
+          </div>
+        )}
+
+        {/* Warmth indicator */}
+        <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: TXM }}>
+          {warmth.loaded.length > 0
+            ? <span style={{ color: GRN }}>{warmth.loaded[0]?.replace(":latest","").slice(0,18)}</span>
+            : <span style={{ color: TXM }}>idle</span>
+          }
+        </div>
+
+        {/* Warm/cold dot */}
+        <div style={{ textAlign: "center" }}>
+          <span style={{
+            display: "inline-block", width: 7, height: 7, borderRadius: "50%",
+            background: isWarm ? GRN : isOnline ? AMB : (tier.machine === "cloud" ? PRP : TXM),
+            boxShadow: isWarm ? `0 0 5px ${GRN}80` : "none",
+          }} />
+        </div>
+
+        {/* Load button */}
+        {tier.type === "ollama" ? (
+          <button
+            onClick={() => handleLoad(tier)}
+            disabled={loading[tier.tier]}
+            style={{
+              fontFamily: "'JetBrains Mono', monospace", fontSize: 8,
+              color: loading[tier.tier] ? TXM : res === "OK" ? GRN : res === "ERR" ? RSE : BLU,
+              background: "transparent",
+              border: `1px solid ${loading[tier.tier] ? TXM : res === "OK" ? GRN + "50" : res === "ERR" ? RSE + "50" : BLU + "40"}`,
+              borderRadius: 4, padding: "3px 8px", cursor: loading[tier.tier] ? "not-allowed" : "pointer",
+              transition: "all 0.15s",
+            }}
+          >{loading[tier.tier] ? "…" : res === "OK" ? "✓" : res === "ERR" ? "✗" : "load"}</button>
+        ) : (
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: TXM, textAlign: "center" }}>–</div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ background: SURF, border: `1px solid ${BORD}`, borderRadius: 8, overflow: "hidden" }}>
+      {/* Header */}
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "60px 90px 1fr 140px 60px 50px",
+        gap: 8, padding: "6px 10px",
+        background: ELEV, borderBottom: `1px solid ${BORDB}`,
+      }}>
+        {["TIER", "MACHINE", "MODEL", "LOADED", "WARM", ""].map((h, i) => (
+          <div key={i} style={{
+            fontFamily: "'JetBrains Mono', monospace", fontSize: 8,
+            color: TXM, letterSpacing: "0.08em",
+          }}>{h}</div>
+        ))}
+      </div>
+
+      {/* Local tiers */}
+      {localTiers.map(t => <TierRow key={t.tier} tier={t} />)}
+
+      {/* Cloud tiers separator */}
+      {cloudTiers.length > 0 && (
+        <>
+          <div style={{
+            padding: "4px 10px", background: `${PRP}10`,
+            borderTop: `1px solid ${BORD}`, borderBottom: `1px solid ${BORD}`,
+          }}>
+            <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: PRP, letterSpacing: "0.08em" }}>
+              CLOUD TIERS
+            </span>
+          </div>
+          {cloudTiers.map(t => <TierRow key={t.tier} tier={t} />)}
+        </>
+      )}
+
+      {/* Footer */}
+      <div style={{
+        padding: "5px 10px", borderTop: `1px solid ${BORD}`,
+        display: "flex", alignItems: "center", gap: 12,
+      }}>
+        <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: TXM }}>
+          {localTiers.filter(t => {
+            const w = getWarmth(t);
+            return w.loaded.length > 0;
+          }).length}/{localTiers.length} local warm
+        </span>
+        <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: TXM }}>
+          {endpoints.filter(e => e.status === "online").length}/{endpoints.length} endpoints online
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function CommandSurface({ status, psData, fleetConfig, fleetPs }) {
+  const [apInput, setApInput]     = useState("");
+  const [apRunning, setApRunning] = useState(false);
+  const [apResult, setApResult]   = useState(null);
+  const [slashInput, setSlashInput] = useState("");
+  const [slashResult, setSlashResult] = useState(null);
+  const [slashRunning, setSlashRunning] = useState(false);
+
+  // ── AUTOPILOT submit ──────────────────────────────────────
+  async function handleAutopilot() {
+    const text = apInput.trim();
+    if (!text || apRunning) return;
+    setApRunning(true);
+    setApResult(null);
+    try {
+      const resp = await fetch(`${ROUTER}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "auto",
+          messages: [{ role: "user", content: text }],
+          strategy: "AUTOPILOT",
+          stream: false,
+        }),
+      });
+      const data = await resp.json();
+      setApResult(data);
+    } catch (e) {
+      setApResult({ error: e.message });
+    }
+    setApRunning(false);
+  }
+
+  // ── Slash command submit ──────────────────────────────────
+  async function handleSlashCmd(cmd) {
+    setSlashInput(cmd);
+    const trimmed = cmd.trim();
+    if (!trimmed || slashRunning) return;
+    setSlashRunning(true);
+    setSlashResult(null);
+
+    if (trimmed === "/privacy on") {
+      try {
+        await fetch(`${ARBITER}/mode`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: "JARVIS_OFFLINE" }) });
+        const resp = await fetch(`${ROUTER}/mode`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode: "JARVIS_OFFLINE" }),
+        });
+        const data = await resp.json();
+        setSlashResult(`Privacy ON — mode: ${data.current}`);
+      } catch (e) {
+        setSlashResult(`Error: ${e.message}`);
+      }
+      setSlashRunning(false);
+      return;
+    }
+    if (trimmed === "/privacy off") {
+      try {
+        await fetch(`${ARBITER}/mode`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: "JARVIS" }) });
+        const resp = await fetch(`${ROUTER}/mode`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode: "JARVIS" }),
+        });
+        const data = await resp.json();
+        setSlashResult(`Privacy OFF — mode: ${data.current}`);
+      } catch (e) {
+        setSlashResult(`Error: ${e.message}`);
+      }
+      setSlashRunning(false);
+      return;
+    }
+
+    // All other commands go through Router chat
+    try {
+      const resp = await fetch(`${ROUTER}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "auto",
+          messages: [{ role: "user", content: trimmed }],
+          stream: false,
+        }),
+      });
+      const data = await resp.json();
+      const text = data.choices?.[0]?.message?.content || JSON.stringify(data);
+      setSlashResult(text);
+    } catch (e) {
+      setSlashResult(`Error: ${e.message}`);
+    }
+    setSlashRunning(false);
+  }
+
+  const bifrost = psData?.bifrost;
+  const hearth  = psData?.hearth;
+  const vega8   = psData?.hearth_vega8;
+  const forge   = psData?.forge;
+
+  const PROFILE_C_B = { "B-Light": GRN, "B-Dual": BLU, "B-Heavy": ORG };
+  const PROFILE_C_F = { "F-Multi": ORG, "F-Max": RSE };
+
+  const SLASH_CMDS = [
+    ["/status",          "System status"],
+    ["/cost today",      "Cloud spend today"],
+    ["/bifrost light",   "Switch Bifrost → B-Light"],
+    ["/bifrost dual",    "Switch Bifrost → B-Dual"],
+    ["/bifrost heavy",   "Switch Bifrost → B-Heavy"],
+    ["/forge multi",     "Switch Forge → F-Multi"],
+    ["/forge max",       "Switch Forge → F-Max"],
+    ["/privacy on",      "Enable WORKSHOP-OFFLINE"],
+    ["/privacy off",     "Disable privacy mode"],
+    ["/autopilot status","AUTOPILOT queue status"],
+  ];
+
+  const apBifrost = psData ? {
+    bif: bifrost?.bifrost || bifrost,
+  } : null;
+
+  return (
+    <div style={{ flex: 1, overflowY: "auto", padding: "18px 20px" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, maxWidth: 1100 }}>
+
+        {/* ── Fleet Manager ── */}
+        <Panel span="1 / -1" style={{ borderColor: `${AMB}30`, padding: 0, overflow: "hidden" }}>
+          <div style={{ padding: "10px 14px", borderBottom: `1px solid ${BORD}`, display: "flex", alignItems: "center", gap: 8 }}>
+            <Label style={{ margin: 0 }}>Fleet Manager</Label>
+            <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: TXM, marginLeft: "auto" }}>
+              {fleetPs ? `polled ${new Date().toLocaleTimeString()}` : "polling…"}
+            </span>
+          </div>
+          <div style={{ padding: "10px 14px" }}>
+            <FleetManager fleetConfig={fleetConfig} fleetPs={fleetPs} />
+          </div>
+        </Panel>
+
+        {/* ── AUTOPILOT Launcher ── */}
+        <Panel span="1 / -1" style={{ borderColor: `${PRP}35`, background: `linear-gradient(140deg, ${SURF} 0%, ${PRP}08 100%)` }}>
+          <Label>AUTOPILOT Launcher</Label>
+          <div style={{
+            display: "flex", gap: 8, marginBottom: 12,
+            background: ELEV, border: `1px solid ${apRunning ? PRP + "60" : BORDB}`,
+            borderRadius: 8, padding: "10px 14px", transition: "border-color 0.2s",
+          }}>
+            <textarea
+              value={apInput}
+              onChange={e => setApInput(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleAutopilot(); } }}
+              placeholder="Describe a task to decompose and execute autonomously…"
+              disabled={apRunning}
+              rows={2}
+              style={{
+                flex: 1, background: "transparent", border: "none",
+                color: TX, fontFamily: "Plus Jakarta Sans, sans-serif",
+                fontSize: 13, lineHeight: 1.5, resize: "none", outline: "none",
+              }}
+            />
+            <button
+              onClick={handleAutopilot}
+              disabled={!apInput.trim() || apRunning}
+              style={{
+                background: apRunning ? "transparent" : `${PRP}25`,
+                border: `1px solid ${apRunning ? TXM : PRP + "60"}`,
+                borderRadius: 7, color: apRunning ? TXM : PRP,
+                fontFamily: "'JetBrains Mono', monospace", fontSize: 10,
+                padding: "6px 16px", cursor: apRunning ? "not-allowed" : "pointer",
+                flexShrink: 0, transition: "all 0.15s", alignSelf: "flex-end",
+              }}
+            >{apRunning ? "Running…" : "Launch"}</button>
+          </div>
+
+          {/* Quick task chips */}
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: apResult ? 14 : 0 }}>
+            {[
+              "Write a Python CSV parser with error handling",
+              "Build a REST API health check module",
+              "Create a config validator with JSON schema",
+            ].map(s => (
+              <button key={s} onClick={() => setApInput(s)} style={{
+                fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: TXD,
+                background: BORD, border: `1px solid ${BORDB}`,
+                borderRadius: 4, padding: "3px 9px", cursor: "pointer",
+              }}>{s}</button>
+            ))}
+          </div>
+
+          {/* Result */}
+          {apResult && (
+            <div style={{ marginTop: 14, borderTop: `1px solid ${BORD}`, paddingTop: 14 }}>
+              {apResult.error ? (
+                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: RSE }}>
+                  Error: {apResult.error}
+                </div>
+              ) : (
+                <div>
+                  {/* Metadata pills */}
+                  <div style={{ display: "flex", gap: 8, marginBottom: 10, flexWrap: "wrap" }}>
+                    {[
+                      ["status",    apResult.bifrost?.status,                    apResult.bifrost?.status === "COMPLETE" ? GRN : AMB],
+                      ["subtasks",  apResult.bifrost?.subtasks,                  BLU],
+                      ["completed", apResult.bifrost?.completed,                 GRN],
+                      ["failed",    apResult.bifrost?.failed,                    apResult.bifrost?.failed > 0 ? RSE : TXM],
+                      ["cost",      apResult.bifrost?.cloud_cost_usd != null ? `$${apResult.bifrost.cloud_cost_usd.toFixed(4)}` : null, AMB],
+                    ].filter(([, v]) => v != null).map(([k, v, c]) => (
+                      <div key={k} style={{
+                        fontFamily: "'JetBrains Mono', monospace", fontSize: 8.5,
+                        background: `${c}15`, border: `1px solid ${c}40`,
+                        borderRadius: 4, padding: "2px 8px", color: c,
+                      }}>{k}: {v}</div>
+                    ))}
+                  </div>
+                  {/* Output preview */}
+                  {apResult.choices?.[0]?.message?.content && (
+                    <div style={{
+                      background: ELEV, border: `1px solid ${BORD}`,
+                      borderRadius: 6, padding: "12px 14px",
+                      fontFamily: "Plus Jakarta Sans, sans-serif", fontSize: 12,
+                      color: TXD, lineHeight: 1.6, maxHeight: 200, overflowY: "auto",
+                      whiteSpace: "pre-wrap", wordBreak: "break-word",
+                    }}>
+                      {apResult.choices[0].message.content.slice(0, 1200)}
+                      {apResult.choices[0].message.content.length > 1200 && (
+                        <span style={{ color: TXM }}> …[truncated]</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </Panel>
+
+        {/* ── Profile Switcher ── */}
+        <Panel>
+          <Label>Profile Switcher</Label>
+
+          {/* Bifrost */}
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: GRN }}>BIFROST</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                <PulseDot alive={bifrost?.status === "online"} size={5} />
+                <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: TXM }}>
+                  {bifrost?.loaded_models?.length || 0} models
+                </span>
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 5, marginBottom: 6 }}>
+              {["B-Light", "B-Dual", "B-Heavy"].map(p => {
+                const active = bifrost?.profile === p;
+                const c = PROFILE_C_B[p];
+                return (
+                  <button key={p} onClick={() => setSlashInput(`/bifrost ${p.replace("B-", "").toLowerCase()}`)}
+                    style={{
+                      flex: 1, fontFamily: "'JetBrains Mono', monospace", fontSize: 8,
+                      padding: "5px 4px", borderRadius: 4, cursor: "pointer",
+                      background: active ? `${c}20` : BORD,
+                      color: active ? c : TXM,
+                      border: `1px solid ${active ? c + "50" : BORD}`,
+                      transition: "all 0.15s",
+                    }}>{p}</button>
+                );
+              })}
+            </div>
+            <div style={{
+              fontSize: 8.5, color: TXM, fontFamily: "'JetBrains Mono', monospace",
+              background: BORD, borderRadius: 3, padding: "3px 7px",
+              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+            }}>
+              {bifrost?.loaded_models?.slice(0, 3).join(", ") || "—"}
+            </div>
+          </div>
+
+          {/* Forge */}
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: ORG }}>FORGE</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <PulseDot alive={forge?.status === "online"} size={5} />
+                {forge?.vram_used_bytes != null && (
+                  <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: TXM }}>
+                    {(forge.vram_used_bytes / 1e9).toFixed(1)}GB VRAM
+                  </span>
+                )}
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 5, marginBottom: 6 }}>
+              {["F-Multi", "F-Max"].map(p => {
+                const active = forge?.profile === p;
+                const c = PROFILE_C_F[p];
+                return (
+                  <button key={p} onClick={() => setSlashInput(`/forge ${p.replace("F-", "").toLowerCase()}`)}
+                    style={{
+                      flex: 1, fontFamily: "'JetBrains Mono', monospace", fontSize: 8,
+                      padding: "5px 4px", borderRadius: 4, cursor: "pointer",
+                      background: active ? `${c}20` : BORD,
+                      color: active ? c : TXM,
+                      border: `1px solid ${active ? c + "50" : BORD}`,
+                      transition: "all 0.15s",
+                    }}>{p}</button>
+                );
+              })}
+            </div>
+            <div style={{
+              fontSize: 8.5, color: TXM, fontFamily: "'JetBrains Mono', monospace",
+              background: BORD, borderRadius: 3, padding: "3px 7px",
+              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+            }}>
+              {forge?.loaded_models?.slice(0, 2).join(", ") || "—"}
+            </div>
+          </div>
+
+          {/* Hearth Vega8 */}
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: BLU }}>VEGA 8</span>
+              <PulseDot alive={vega8?.status === "online"} size={5} />
+            </div>
+            <div style={{
+              fontSize: 8.5, color: TXM, fontFamily: "'JetBrains Mono', monospace",
+              background: BORD, borderRadius: 3, padding: "3px 7px",
+              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+            }}>
+              {vega8?.loaded_models?.slice(0, 3).join(", ") || "—"}
+            </div>
+          </div>
+        </Panel>
+
+        {/* ── Slash Commands ── */}
+        <Panel>
+          <Label>Slash Commands</Label>
+
+          {/* Quick chips */}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 12 }}>
+            {SLASH_CMDS.map(([cmd, desc]) => (
+              <button key={cmd} onClick={() => handleSlashCmd(cmd)} title={desc} style={{
+                fontFamily: "'JetBrains Mono', monospace", fontSize: 8, color: TXD,
+                background: BORD, border: `1px solid ${BORDB}`,
+                borderRadius: 4, padding: "3px 8px", cursor: "pointer",
+                transition: "all 0.12s",
+              }}>{cmd}</button>
+            ))}
+          </div>
+
+          {/* Input */}
+          <div style={{
+            display: "flex", gap: 7, marginBottom: 10,
+            background: ELEV, border: `1px solid ${slashRunning ? BLU + "60" : BORDB}`,
+            borderRadius: 6, padding: "7px 10px", transition: "border-color 0.2s",
+          }}>
+            <input
+              value={slashInput}
+              onChange={e => setSlashInput(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") handleSlashCmd(slashInput); }}
+              placeholder="/command …"
+              disabled={slashRunning}
+              style={{
+                flex: 1, background: "transparent", border: "none",
+                color: TX, fontFamily: "'JetBrains Mono', monospace",
+                fontSize: 12, outline: "none",
+              }}
+            />
+            <button
+              onClick={handleSlashCmd.bind(null, slashInput)}
+              disabled={!slashInput.trim() || slashRunning}
+              style={{
+                background: slashRunning ? "transparent" : `${BLU}20`,
+                border: `1px solid ${slashRunning ? TXM : BLU + "50"}`,
+                borderRadius: 5, color: slashRunning ? TXM : BLU,
+                fontFamily: "'JetBrains Mono', monospace", fontSize: 9,
+                padding: "4px 12px", cursor: slashRunning ? "not-allowed" : "pointer",
+                flexShrink: 0, transition: "all 0.15s",
+              }}
+            >{slashRunning ? "…" : "Run"}</button>
+          </div>
+
+          {/* Result */}
+          {slashResult && (
+            <div style={{
+              background: ELEV, border: `1px solid ${BORD}`,
+              borderRadius: 5, padding: "10px 12px",
+              fontFamily: "'JetBrains Mono', monospace", fontSize: 11,
+              color: TXD, lineHeight: 1.6, maxHeight: 200, overflowY: "auto",
+              whiteSpace: "pre-wrap", wordBreak: "break-word",
+            }}>
+              {slashResult}
+            </div>
+          )}
+        </Panel>
+
+      </div>
+    </div>
+  );
+}
+// ═══════════════════════════════════════════════════════════
 // STUB SURFACES
 // ═══════════════════════════════════════════════════════════
 function StubSurface({ name, desc }) {
@@ -1970,11 +2802,22 @@ export default function BifrostPortal() {
   const [mockOverride, setMockOverride] = useState(MOCK);
   const [metrics, setMetrics] = useState(null);
   const [tick,    setTick]    = useState(0); // force re-render timestamp
+  const [psData,  setPsData]  = useState(null);
+  const [fleetConfig, setFleetConfig] = useState(null);
+  const [fleetPs,     setFleetPs]     = useState(null);
+  const [telemetry, setTelemetry] = useState({ bands: {}, cloudSpend: { total_usd: 0, by_tier: {} }, recentEvents: [] });
 
   const poll = useCallback(async () => {
-    const [s, m, a] = await Promise.all([fetchStatus(), fetchMetrics(), fetchArbiter()]);
-    setStatus({ ...s, arbiter: a });
+    const [s, m, a, ps, tel, fc, fps] = await Promise.all([fetchStatus(), fetchMetrics(), fetchArbiter(), fetchPs(), fetchTelemetry(), fetchFleetConfig(), fetchFleetPs()]);
+    // Snap-back defense: Arbiter force-lock wins over Broadcaster hardware detection
+    const OFFLINE_GUARD = new Set(["WORKSHOP_OFFLINE", "JARVIS_OFFLINE"]);
+    const effectiveMode = OFFLINE_GUARD.has(a?.confirmed_mode) ? a.confirmed_mode : s.mode;
+    setStatus({ ...s, mode: effectiveMode, arbiter: a });
     setMetrics(m);
+    setPsData(ps);
+    if (fc) setFleetConfig(fc);
+    if (fps) setFleetPs(fps);
+    setTelemetry(tel);
     setTick(Date.now());
   }, []);
 
@@ -1988,6 +2831,7 @@ export default function BifrostPortal() {
     <>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+        html, body { background: #080B11; margin: 0; padding: 0; }
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
         ::-webkit-scrollbar { width: 5px; height: 5px; }
         ::-webkit-scrollbar-track { background: ${BG}; }
@@ -2006,11 +2850,11 @@ export default function BifrostPortal() {
         fontFamily: "Plus Jakarta Sans, sans-serif",
         overflowX: "hidden",
       }}>
-        <TopNav status={status} surface={surface} setSurface={setSurface} mockOverride={mockOverride} setMockOverride={setMockOverride} />
+        <TopNav status={status} surface={surface} setSurface={setSurface} mockOverride={mockOverride} setMockOverride={setMockOverride} setStatus={setStatus} />
 
-        <div style={{ display: surface === "Observe"  ? "flex" : "none", flex: 1, flexDirection: "column", minHeight: 0, overflow: "hidden" }}><ObserveSurface status={status} metrics={metrics} /></div>
+        <div style={{ display: surface === "Observe"  ? "flex" : "none", flex: 1, flexDirection: "column", minHeight: 0, overflow: "hidden" }}><ObserveSurface status={status} metrics={metrics} telemetry={telemetry} /></div>
         <div style={{ display: surface === "Converse" ? "flex" : "none", flex: 1, flexDirection: "column", minHeight: 0, overflow: "hidden" }}><ConverseSurface status={status} /></div>
-        <div style={{ display: surface === "Command"  ? "flex" : "none", flex: 1, flexDirection: "column", minHeight: 0, overflow: "hidden" }}><StubSurface name="Command" desc="Session 3 — AUTOPILOT launcher, profiles, slash commands" /></div>
+        <div style={{ display: surface === "Command"  ? "flex" : "none", flex: 1, flexDirection: "column", minHeight: 0, overflow: "hidden" }}><CommandSurface status={status} psData={psData} fleetConfig={fleetConfig} fleetPs={fleetPs} /></div>
 
         {/* Status bar */}
         <div style={{
@@ -2030,6 +2874,7 @@ export default function BifrostPortal() {
     </>
   );
 }
+
 
 
 
